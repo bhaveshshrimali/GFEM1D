@@ -21,6 +21,7 @@ Parameters:
 FIX ME: 
     change the exact solution for plotting 
     include p-hierarchical shape functions (FEM not GFEM)
+    Lines 178, 179 in implementation of higher order FE (how to properly dimension globK, globF etc. without touching nodes )
 """
 
 import numpy as np
@@ -39,7 +40,7 @@ class geometry() : #1D geometry parameters
         self.A=1.
         self.E=1.
         self.C=0.
-        self.a=50.
+        self.a=500.
         self.xb=0.2
         self.nLNodes=ne+1       #Linear elements
         self.nQNodes=2*ne+1     #Quadratic elements 
@@ -64,26 +65,38 @@ class GPXi():
 
 class basis():  # defined on the canonical element (1D : [-1,1] ) 
     def __init__(self,deg,basis_type):
-        from sympy import Symbol,diff,Array,lambdify,legendre,integrate
-        if basis_type == 'L':                                                  #1D Lagrange 
+        deg = int(deg)
+        from sympy import Symbol,diff,Array,lambdify,legendre,integrate,simplify,permutedims
+        if basis_type == 'L':                                                  #1D Lagrange basis of degree deg
             z=Symbol('z')
-            if deg==2.:     # denotes the number of nodes 
-                N=1/2*Array([1-z,1+z])
-                dfN=diff(N,z)
-                self.Ns=lambdify(z,N,'numpy')
-                self.dN=lambdify(z,dfN,'numpy')
-            elif deg==3.:
-                N=1/2*Array([z*(z-1),2*(1+z)*(1-z),z*(1+z)])
-                dfN=diff(N,z)
-                self.Ns=lambdify(z,N,'numpy')
-                self.dN=lambdify(z,dfN,'numpy')
-            elif deg==4.:                                                      #not implemented yet. the no. of nodes change. define a general geom.nNnodes (?)
-                N=1/2*Array([z*(z-1),2*(1+z)*(1-z),z*(1+z)])
-                dfN=diff(N,z)
-                self.Ns=lambdify(z,N,'numpy')
-                self.dN=lambdify(z,dfN,'numpy')
-            else:
-                raise Exception('Element type not implemented yet')
+            Xi=np.linspace(-1,1,deg+1)
+            def lag_basis(k):
+                n = 1.
+                for i in range(len(Xi)):
+                    if k != i:
+                        n *= (z-Xi[i])/(Xi[k]-Xi[i])
+                return n
+            N = Array([simplify(lag_basis(m)) for m in range(deg+1)])            
+            dfN = diff(N,z)+1.e-25*N
+            self.Ns=lambdify(z,N,'numpy')
+            self.dN=lambdify(z,dfN,'numpy')
+#            if deg==2.:     # denotes the number of nodes 
+#                N=1/2*Array([1-z,1+z])
+#                dfN=diff(N,z)
+#                self.Ns=lambdify(z,N,'numpy')
+#                self.dN=lambdify(z,dfN,'numpy')
+#            elif deg==3.:
+#                N=1/2*Array([z*(z-1),2*(1+z)*(1-z),z*(1+z)])
+#                dfN=diff(N,z)
+#                self.Ns=lambdify(z,N,'numpy')
+#                self.dN=lambdify(z,dfN,'numpy')
+#            elif deg==4.:                                                      #not implemented yet. the no. of nodes change. define a general geom.nNnodes (?)
+#                N=1/2*Array([z*(z-1),2*(1+z)*(1-z),z*(1+z)])
+#                dfN=diff(N,z)
+#                self.Ns=lambdify(z,N,'numpy')
+#                self.dN=lambdify(z,dfN,'numpy')
+#            else:
+#                raise Exception('Element type not implemented yet')
         elif basis_type == 'M':                                                #1D Legendre Polynomials (Fischer calls this spectral)
             z = Symbol('z')
             x=Symbol('x')
@@ -95,9 +108,18 @@ class basis():  # defined on the canonical element (1D : [-1,1] )
                 else:
                     return ((2*(n+3)-3)/2.)**0.5*integrate(legendre((n+1),x),(x,-1,z))
             N=Array([gen_legendre_basis(i-2) for i in range(deg+1)])
+#            print(N)
+            N2 = N.tolist()
+            N2[-1] = N[1]
+            N2[1] = N[-1]
+            #N[-1] = N[-1] - N[1]
+            N=Array(N2)
             dfN=diff(N,z)+1.e-25*N
+#            print(N)
             self.Ns=lambdify(z,N,'numpy')
             self.dN=lambdify(z,dfN,'numpy')
+        else:
+            raise Exception('Element type not implemented yet')
             
 def fexact(x,y,p):
     u,up=y
@@ -109,30 +131,33 @@ def fbc(ya,yb,p):
     return np.array([ya[0],yb[0],a-geom.a,xb-geom.xb])
 
 
-El='L3'               #Linear 3-noded element (--> Quadratic Lagrange)
-B=basis(float(El[1]),El[0]) #Basis for FE fields (isoparametric) 
-Np = 20              #Order of Gauss-Integration for the Discrete Galerkin-Form 
-Nel=10
+El='M3'                                                                        #1D Element of degree El[1]
+MapX='L2'                                                                      #1D Mapping function for the physical coordinates
+nB=basis(float(MapX[1]),MapX[0])
+B=basis(float(El[1]),El[0])                                                    #Basis for FE fields (isoparametric) 
+Np = 30                                                                        #Order of Gauss-Integration for the Discrete Galerkin-Form 
+Nel=500
 geom=geometry(Nel,float(El[1]))
 GP=GPXi(Np)
 
-def loc_mat(nodes,a,xb):           #Computes the element quantities when supplied with gloabl nodes
+def loc_mat(nodes,a,xb):                                                       #Computes the element quantities when supplied with gloabl nodes
     xi=GP.xi;W=GP.wght
-    if El[1]=='2': # fix this if condition 
-        x=np.array(B.Ns(xi)).T @ nodes    # Mapping for linear 1D
-        Je=(np.array(B.dN(xi)).T @ nodes)*np.ones(xi.size,)        #Jacobian for 1D mapping
-    else:
-        x=x=np.array(B.Ns(xi)).T @ nodes
-        Je=np.array(B.dN(xi)).T @ nodes
-    if El=='L2' or El=='L3':   # 1D elements
+#    if El[1]=='2': # fix this if condition 
+#        x=np.array(B.Ns(xi)).T @ nodes    # Mapping for linear 1D
+#        Je=(np.array(B.dN(xi)).T @ nodes)*np.ones(xi.size,)        #Jacobian for 1D mapping
+#    else:
+    x=np.array(nB.Ns(xi)).T @ nodes
+    Je=np.array(nB.dN(xi)).T @ nodes
+#    print(Je)
+    if El[0]=='L' or El[0]=='M':                                               # 1D lagrange or legendre elements
         b1 = np.array(B.Ns(xi)).reshape(-1,1,W.size)
-        if El=='L2':
-            a1 = np.array(B.dN(xi)).repeat(W.size).reshape(2,-1).reshape(-1,1,W.size)
-        else: 
-            a1=np.array(B.dN(xi)).reshape(-1,1,W.size)  
+#        if El=='L2':
+#            a1 = np.array(B.dN(xi)).repeat(W.size).reshape(2,-1).reshape(-1,1,W.size)
+#        else: 
+        a1=np.array(B.dN(xi)).reshape(-1,1,W.size)  
         a2=a1.reshape(1,len(a1),-1).copy()
         b2=b1.reshape(1,len(b1),-1).copy()
-        a1 *= geom.E/Je*geom.A*W                 #multiply by weights, jacobian, A, bitwise 
+        a1 *= geom.E/Je*geom.A*W                                               #multiply by weights, jacobian, A, bitwise 
         b1 *= geom.C*Je*W
         mat=np.tensordot(a1,a2,axes=([1,2],[0,2])) + np.tensordot(b1,b2,axes=([1,2],[0,2]))
 #        elemF=np.dstack((np.array(B.Ns(xi[i]))*W[i]*Je[i]*b(x[i]) for i in range(xi.size)))
@@ -141,44 +166,46 @@ def loc_mat(nodes,a,xb):           #Computes the element quantities when supplie
         return mat,elemF
 
 
-if float(El[1])==2.:
+if float(El[1])==1.:
     nodes=np.linspace(0.,geom.L,geom.nLNodes) # Global nodal coordinates 
     elems=np.vstack( (np.arange(1,geom.nLNodes,1),np.arange(2,geom.nLNodes+1,1)) ).astype(int).T-1 # only for linear 1D lagrange 
-elif float(El[1])==3.:
+elif float(El[1])==2.:
     nodes=np.linspace(0.,geom.L,geom.nQNodes) # Global nodal coordinates
     elems=np.vstack( (np.arange(1,geom.nQNodes,2),
                       np.arange(2,geom.nQNodes+1,2),
-                      np.arange(3,geom.nQNodes+2,2))).astype(int).T-1 # only for quadr. 1D lagrange
+                      np.arange(3,geom.nQNodes+2,2))).astype(int).T-1          # only for quadr. 1D lagrange
+
 
 globK=0*np.eye(len(nodes)*geom.ndim)
 globF=np.zeros(len(nodes)*geom.ndim)
-dof=np.inf*np.ones(len(globK))     #initialize 
+dof=np.inf*np.ones(len(globK))                                                 #initialize 
 prescribed_dof=np.array([[0,0],
                          [-1,0]])
-prescribed_forc=0*np.array([[-1,-geom.M*geom.g]]) # Don't use `int` here! (prescribed concentrated loads) 
+prescribed_forc=0*np.array([[-1,-geom.M*geom.g]])                              # Don't use `int` here! (prescribed concentrated loads) 
 
 dof[prescribed_dof[:,0]]=prescribed_dof[:,1]
 
 for k in range(elems[:,0].size):  #assembly
     elnodes=elems[k]
-    if El[1]=='2':
+    if El[1]=='1':
         globdof=np.array([geom.ndim*elnodes[0],geom.ndim*elnodes[1]])
-    elif El[1]=='3':
+    elif El[1]=='2':
         globdof=np.array([geom.ndim*elnodes[0],geom.ndim*elnodes[1],geom.ndim*elnodes[2]])
-    if El[0]=='L':
+    if El[0]=='L' or El[0]=='M':                                               # 1D lagrange or legendre polynomials 
         nodexy=nodes[elnodes]
     else:
         nodexy=nodexy[:,elnodes]
     kel,fel=loc_mat(nodexy,geom.a,geom.xb)
-    globK[np.ix_(globdof,globdof)] += kel  #this process would change in vectorization 
+    globK[np.ix_(globdof,globdof)] += kel                                      #this process would change in vectorization 
     globF[globdof] += fel
 
 globF[int(prescribed_forc[:,0])] += prescribed_forc[:,1]
 #print(globF[-1])
-fdof=dof==np.inf            # free dofs
-nfdof=np.invert(fdof)       # specified dofs 
-dof[fdof]=la.solve(globK[np.ix_(fdof,fdof)],globF[fdof]-globK[np.ix_(fdof,nfdof)] @ dof[nfdof])
-xplot=np.linspace(0.,geom.L,1000)  #sampling points for the exact solution
+fdof=dof==np.inf                                                               # free dofs
+nfdof=np.invert(fdof)                                                          # specified dofs 
+dof[fdof]=la.solve(globK[np.ix_(fdof,fdof)],globF[fdof]-
+   globK[np.ix_(fdof,nfdof)] @ dof[nfdof])
+xplot=np.linspace(0.,geom.L,1000)                                              #sampling points for the exact solution
 
 
 
@@ -212,8 +239,6 @@ def plotfigs(xp):
     ax.set_title(r'Strain',fontsize=14)
 #    ax.yaxis.set_minor_locator(my)    
 
-
-
     plt.figure(3)
     plt.plot(xp,fexact(xp)['stress'],label=r'Exact Solution')
     if El[1]=='2':
@@ -227,23 +252,27 @@ def plotfigs(xp):
     ax.set_title(r'Stress',fontsize=14)
 #    ax.yaxis.set_minor_locator(my)    
 
-def fsample(x,dof):  #giving out the displacement, strain and stress at x: GP and dof value of disp. at gauss point
-    dspl=splrep(nodes,dof,k=int(El[1])-1)
+def fsample(x,dof,nodes):                                                            #giving out the displacement, strain and stress at x: GP and dof value of disp. at gauss point
+    dspl=splrep(nodes,dof,k=int(El[1]))
     return splev(x,dspl)
 
 #plotfigs(xplot) 
 ue=uex(xplot,geom.a,geom.xb)
-xpl2 = np.linspace(0,nodes[-1],10*geom.nQNodes-1)
-uapp=fsample(xpl2,dof)
+xpl2 = np.linspace(nodes[0],nodes[-1],10*geom.nQNodes-1)
+uapp=fsample(xpl2,dof[0:len(dof):int(El[1])],nodes[0:len(nodes):2])
 y_a=np.zeros((2,nodes.size))
 y_b=np.zeros((2,nodes.size))
 
 res_a=solve_bvp(fexact,fbc,nodes,y_a,p=[geom.a,geom.xb])
 
-plt.figure()
+plt.figure(figsize=(8,8))
 plt.plot(xplot,res_a.sol(xplot)[0],label=r'Exact Solution')
 plt.text(0.5,0.6,r'$a=$'+str(geom.a),fontsize=22)
-plt.plot(xpl2,uapp,'rx',label=r'Quadratic Lagrange FE')
-plt.tick_params(axis='both',labelsize=18)
+if El[0]=='L':
+    plt.plot(xpl2,uapp,'rx',label=r'Quadratic Lagrange FE')
+elif El[0]=='M':
+    plt.plot(xpl2,uapp,'rx',label=r'p-Hierarchical FE: Degree '+str(El[1]))
+plt.tick_params(axis='both',which='both',direction='in',top=True,right=True,labelsize=18)
 plt.title(r'Number of elements: '+str(Nel)+', NGP = '+str(Np),fontsize=20)
 plt.legend(loc=0,fontsize=18)
+plt.grid(True,linestyle='--')
