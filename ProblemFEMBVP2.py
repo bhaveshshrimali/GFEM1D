@@ -11,7 +11,8 @@ Solving a 1D BVP:
     u(0)=0; u(L)=1  : Homogeneous BC's
 
 with quadratic Lagrange elements , 
-now (hopefully) with quadratic (at least) p-Hierarchical elements
+now (hopefully) with quadratic (at least) p-Hierarchical elements, 
+and, now (hopefully) with enrichments to PoUs (hat functions)
 Parameters: 
     
     L  = Length of the domain
@@ -66,7 +67,7 @@ class basis():                                                                 #
         if basis_type == 'L':                                                  #1D Lagrange basis of degree deg
             z=Symbol('z')
             Xi=np.linspace(-1,1,deg+1)
-            def lag_basis(k):
+            def lag_basis(k):                                                  #may use nprod from mpmath but not worth it, at least in 1d
                 n = 1.
                 for i in range(len(Xi)):
                     if k != i:
@@ -95,9 +96,22 @@ class basis():                                                                 #
 #            print(N)
             self.Ns=lambdify(z,N,'numpy')
             self.dN=lambdify(z,dfN,'numpy')
-#        elif basis_type == 'GFEM1D1':                                         #1D GFEM Linear Enrichment Functions            
-        else:
-            raise Exception('Element type not implemented yet')
+        elif basis_type == 'GFEM1D1':
+            z=Symbol('z')
+            x=Symbol('x')
+            Xi=np.linspace(-1,1,deg+1)
+            def lag_basis(k):                                                  #may use nprod from mpmath but not worth it, at least in 1d
+                n = 1.
+                for i in range(len(Xi)):
+                    if k != i:
+                        n *= (z-Xi[i])/(Xi[k]-Xi[i])
+                return n
+            N1 = Array([simplify(lag_basis(m)) for m in range(deg+1)])            
+            dfN = diff(N1,z)+1.e-25*N1
+            
+#            
+#        else:
+#            raise Exception('Element type not implemented yet')
        
 def E(x):
     Ef = geom.E2*np.heaviside(x-geom.xgam,0) + geom.E1*(1-np.heaviside(x-geom.xgam,0))
@@ -126,18 +140,26 @@ def fbc(ya,yb):
     return np.array([ya[0],yb[0]-1.])
 
 
-El='L3'                                                                        #1D Element of degree El[1]
-MapX='L2'                                                                      #1D Mapping function for the physical coordinates (can take only single digits, some modification needed)
+def Lj(x,nodes):                                                               #Nodal Enrichment function Lj(x) for an element with nodes 'nodes'
+    hL = abs(nodes[0]-geom.xgam)
+    hR = abs(nodes[-1]-geom.xgam)
+    return (x - geom.xgam)/(max(hL,hR))
+
+def find_nodes(nodes):
+    return abs(nodes-geom.xgam) <= geom.L/Nel
+
+El='M6'                                                                        #1D Element of degree El[1]
+MapX='L3'                                                                      #1D Mapping function for the physical coordinates (can take only single digits, some modification needed)
 nB=basis(float(MapX[-1]),MapX[0])
 B=basis(float(El[-1]),El[0])                                                   #Basis for FE fields (isoparametric) 
-Np = 6                                                                        #Order of Gauss-Integration for the Discrete Galerkin-Form 
-Nel=40
+Np = 10                                                                         #Order of Gauss-Integration for the Discrete Galerkin-Form 
+Nel=3
 geom=geometry(Nel,float(MapX[-1])) 
 probsize=geometry(Nel,float(El[-1]))
 GP=GPXi(Np)
 Bp = (geom.E1*geom.E2-g(geom.xgam)*(geom.E2-geom.E1)-g(geom.L)*geom.E1)/(geom.E2*(geom.xgam*(geom.E2-geom.E1)+geom.L*geom.E1))
 
-def loc_mat(nodes):                                                       #Computes the element quantities when supplied with gloabl nodes
+def loc_mat(nodes):                                                            #Computes the element quantities when supplied with gloabl nodes
     xi=GP.xi;W=GP.wght
     x=np.array(nB.Ns(xi)).T @ nodes
     Je=np.array(nB.dN(xi)).T @ nodes
@@ -147,7 +169,7 @@ def loc_mat(nodes):                                                       #Compu
         a1=np.array(B.dN(xi)).reshape(-1,1,W.size)  
         a2=a1.reshape(1,len(a1),-1).copy()
         b2=b1.reshape(1,len(b1),-1).copy()
-        a1 *= E(x)/Je*geom.A*W                                               #multiply by weights, jacobian, A, in bitwise fashion 
+        a1 *= E(x)/Je*geom.A*W                                                 #multiply by weights, jacobian, A, in bitwise fashion 
         b1 *= geom.C*Je*W
         mat=np.tensordot(a1,a2,axes=([1,2],[0,2])) + np.tensordot(b1,b2,axes=([1,2],[0,2]))     #could potentially use einsum to clean it up (but works for now!)
         elemF=(np.array(B.Ns(xi))*W*Je*T(x)).sum(axis=1).flatten()
@@ -187,50 +209,7 @@ dof[fdof]=la.solve(globK[np.ix_(fdof,fdof)],globF[fdof]-
    globK[np.ix_(fdof,nfdof)] @ dof[nfdof])
 xplot=np.linspace(0.,geom.L,1000)                                              #sampling points for the exact solution
 
-def plotfigs(xp):
-    plt.figure(1)
-    plt.plot(xp,fexact(xp)['disp'],label=r'Exact Solution')
-    if El[1]=='2':
-        plt.plot(xp,fsample(xp,dof)['disp'],label=r'Linear Basis')
-    elif El[1]=='3':
-        plt.plot(xp,fsample(xp,dof)['disp'],label=r'Quadratic Basis')
-    plt.legend(loc=0,fontsize=14)
-    plt.ticklabel_format(style='sci',axis='y',scilimits=(0,0))
-    ax=plt.gca()
-#    ax.xaxis.set_minor_locator(mx)
-    ax.set_title(r'Displacement',fontsize=14)
-#    ax.yaxis.set_minor_locator(my)    
-
-
-
-    plt.figure(2)
-    plt.plot(xp,fexact(xp)['strain'],label=r'Exact Solution')
-    if El[1]=='2':
-        plt.plot(xp,fsample(xp,dof)['strain'],label=r'Linear Basis')
-    elif El[1]=='3':
-        plt.plot(xp,fsample(xp,dof)['strain'],label=r'Quadratic Basis')
-    plt.legend(loc=0,fontsize=14)
-    plt.ticklabel_format(style='sci',axis='y',scilimits=(0,0))
-    ax=plt.gca()
-#    ax.xaxis.set_minor_locator(mx)
-    ax.set_title(r'Strain',fontsize=14)
-#    ax.yaxis.set_minor_locator(my)    
-
-    plt.figure(3)
-    plt.plot(xp,fexact(xp)['stress'],label=r'Exact Solution')
-    if El[1]=='2':
-        plt.plot(xp,fsample(xp,dof)['stress'],label=r'Linear Basis')
-    elif El[1]=='3':
-        plt.plot(xp,fsample(xp,dof)['stress'],label=r'Quadratic Basis')
-    plt.legend(loc=0,fontsize=14)
-    plt.ticklabel_format(style='sci',axis='y',scilimits=(0,0))
-    ax=plt.gca()
-#    ax.xaxis.set_minor_locator(mx)
-    ax.set_title(r'Stress',fontsize=14)
-#    ax.yaxis.set_minor_locator(my)    
-
-def fsample(x,dof,nodes,sample_type):                                                      #giving out the displacement, strain and stress at x: GP and dof value of disp. at gauss point
-    print(sample_type)
+def fsample(x,dof,nodes,sample_type):                                          #outputs the FE field (i.e. disp here) at x according to approximation
     if sample_type=='spline':
         if int(El[1]) >5:
             k0=5
@@ -248,31 +227,34 @@ def fsample(x,dof,nodes,sample_type):                                           
         dofarang=dofarang.reshape(int(El[-1])+1,1,-1)
         xarang = np.vstack((np.arange(k,k+nodes.size-1,int(MapX[-1])) for k in range(int(MapX[-1])+1)))
         xarang = xarang.reshape(int(MapX[-1])+1,1,-1)
-        print(dof.shape)
-        print(nodes.shape)
+#        print(dof.shape)
+#        print(nodes.shape)
         dofs=dof[dofarang]
         nodesx=nodes[xarang]
         soln = np.einsum('ikj,kmj->imj',N,dofs)
         xpl = np.einsum('ikj,kmj->imj',Nx,nodesx)
-        return (xpl.T.ravel(),soln.T.ravel())                                                 # return the solution evaluated at the given points 
+        return (xpl.T.ravel(),soln.T.ravel())                                  # return the solution evaluated at the given points 
 
-#plotfigs(xplot) 
 ue=uex(xplot)
 xpl2 = np.linspace(nodes[0],nodes[-1],10*geom.nQNodes-1)
-fittype='vandermonde'
+fittype='vandermonde'                                                          #how to plot solution: Classical --> Vandermonde (using local appx), Fast --> Splines (default splrep)
 
 if fittype=='spline':
     xpl2,uapp=fsample(xpl2,dof[0:len(dof):int(El[1])],nodes[0:len(nodes):2],fittype)
 elif fittype=='vandermonde':
     xpl2,uapp=fsample(xpl2,dof,nodes,fittype)
-    
-y_a=np.zeros((2,nodes.size))
-y_b=np.zeros((2,nodes.size))
 
+#Solvnig the problem in case of nonzero C (where it gets nasty) numerically using collocation 
+y_a=np.zeros((2,nodes.size))
+#y_a[0,-1]=1
+y_b=np.zeros((2,nodes.size))
 res_a=solve_bvp(fexact,fbc,nodes,y_a)
 
+
+#Plotting the solution (make it separate once you test cases)
 plt.figure(figsize=(8,8))
 plt.plot(xplot,uex(xplot),label=r'Exact Solution')
+#plt.plot(xplot,res_a.sol(xplot)[0],label=r'Scipy: solve\_bvp')
 ax=plt.gca()
 if El[0]=='L':
     plt.plot(xpl2,uapp,'rx',label=r'Quadratic Lagrange FE')
@@ -282,6 +264,6 @@ plt.tick_params(axis='both',which='both',direction='in',top=True,right=True,labe
 plt.title(r'Number of elements: '+str(Nel)+', NGP = '+str(Np),fontsize=20)
 plt.legend(loc=0,fontsize=18)
 plt.grid(True,linestyle='--')
-plt.text(0.25,0.2,r'$U^h$ = '+str(0.5*dof @ (globK @ dof)),transform=ax.transAxes,
+plt.text(0.1,0.4,r'$U^h$ = '+str(0.5*dof @ (globK @ dof)),transform=ax.transAxes,
          fontsize=22,bbox=dict(facecolor='red', alpha=0.5))
 print(0.5*dof @ (globK @ dof))
