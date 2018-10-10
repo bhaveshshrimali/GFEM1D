@@ -108,7 +108,7 @@ class basis():                                                                 #
                 return n
             N1 = Array([simplify(lag_basis(m)) for m in range(deg+1)])            
             dfN = diff(N1,z)+1.e-25*N1
-            
+#            Just enrich the nodes whose support xgam lies in??
 #            
 #        else:
 #            raise Exception('Element type not implemented yet')
@@ -153,7 +153,7 @@ MapX='L3'                                                                      #
 nB=basis(float(MapX[-1]),MapX[0])
 B=basis(float(El[-1]),El[0])                                                   #Basis for FE fields (isoparametric) 
 Np = 10                                                                         #Order of Gauss-Integration for the Discrete Galerkin-Form 
-Nel=3
+Nel=5
 geom=geometry(Nel,float(MapX[-1])) 
 probsize=geometry(Nel,float(El[-1]))
 GP=GPXi(Np)
