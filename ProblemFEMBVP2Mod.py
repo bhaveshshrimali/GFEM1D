@@ -19,6 +19,9 @@ FIX ME:
     Add a condition to check for odd number of elements 
         - Quadrature has to be applied on integration sub-elements
         - Even taking arbitrary points won't work (?) - No exponential converg.
+    Add additional dofs of the blending element (Line 278) which correpsond to 
+    the correction function (since it requires enriching all the dofs of the 
+    blending elements)
     
     
     
@@ -37,16 +40,17 @@ from sympy import Symbol, Array, diff, integrate, simplify, lambdify, legendre
 
 plt.rc('text',usetex=True)
 
-enrch=2
+enrch=0
 
 class geometry() : #1D geometry parameters    
     def __init__(self,ne,deg):
-        self.L=10.
+        self.L=1
         self.A=1.
-        self.E1=10**4
-        self.E2=10**3
+        self.E1=1
+        self.E2=2*self.E1
+#        self.E2=10**3
         self.C=0.
-        self.a=50
+#        self.a=50
         self.xgam=0.5*self.L
         self.nLNodes=ne+1       #Linear elements
         self.nQNodes=2*ne+1     #Quadratic elements 
@@ -65,7 +69,7 @@ class GPXi():
 class basis():                                                                 # defined on the canonical element (1D : [-1,1] ) 
     def __init__(self,deg,basis_type):
         deg = int(deg)
-        if basis_type == 'L':                                                  #1D Lagrange basis of degree deg
+        if basis_type == 'L':                                                  # 1D Lagrange basis of degree deg
             z=Symbol('z')
             Xi=np.linspace(-1,1,deg+1)
             def lag_basis(k):
@@ -79,7 +83,7 @@ class basis():                                                                 #
             self.Ns=lambdify(z,N,'numpy')
             self.dN=lambdify(z,dfN,'numpy')
             self.enrich=1
-        elif basis_type == 'M':                                                #1D Legendre Polynomials (Fischer calls this spectral)
+        elif basis_type == 'M':                                                # 1D Legendre Polynomials (Fischer calls this spectral)
             z = Symbol('z')
             x=Symbol('x')
             def gen_legendre_basis(n):
@@ -133,7 +137,7 @@ def uex(x):
     return np.heaviside(x-geom.xgam,1.0)*u2(x)+(1-np.heaviside(x-geom.xgam,0))*u1(x)
 
 def T(x):
-    return 25*x-7.5*x**2+0.5*x**3
+    return 0*(25*x-7.5*x**2+0.5*x**3)
 
 def fexact(x,y):
     u,up=y
@@ -163,9 +167,14 @@ def Ejp(x,xalph,halph,enrich):
     dfN = lambdify(z,diff(N,z)+1.e-26*N,'numpy')                               #shape consistency
     return dfN(x)        
 
-def Etilj(x,xgam):                                                             # Absolute signed distance function with smoothening 
-#    z=Symbol()
-    return abs(x-xgam)*np.sign((x-xgam)*np.sign(x-xgam))  
+def Etilj(x,xgam):                                                       # Absolute signed distance function with smoothening 
+    return np.heaviside(x-xgam,0.)*(x-xgam)/(geom.L-xgam)                         # Test for ramp function  
+#    return abs(abs(x-xgam)*np.sign((x-xgam)))/np.max(abs(xalph-xgam))
+
+def Etiljp(x,xgam):
+    return np.heaviside(x-xgam,0.)/(geom.L-xgam)
+#    return np.sign(x-xgam)*np.sign((x-xgam)*np.sign(x-xgam))
+#    return (-1.+2*np.heaviside(x-xgam,1))/np.max(abs(xalph-xgam))
 
 def loc_mat(nodes):                                                            #Computes the element quantities when supplied with gloabl nodes
     xi=GP.xi;W=GP.wght
@@ -193,27 +202,52 @@ def loc_mat(nodes):                                                            #
 #        print(varphi_alph.shape)
         varphi_alph_p = 1/Je* np.array(B.dN(xi)).reshape(1,-1,W.size)          #\varphi_1' evaluated at gauss points (along 3rd Dimensn)
         
-        if not(enrich_track_var.any()):                                        #if any node's support does not have the interface in it 
-            Ealph = np.array(Ej(x,nodes,halph,enrch))
-#            print(Ealph.shape)
-            Ealphp = np.array(Ejp(x,nodes,halph,enrch))
-#            Ealphp[0]=1.                                                      #Gradients work slightly differently (cannot take bitwise product of gradient of individual functions)
-        else:
+        Ealph = np.array(Ej(x,nodes,halph,enrch))
+        Ealphp = np.array(Ejp(x,nodes,halph,enrch))
             
-        varphi_alph_E_alph = np.einsum('ijk,ijk->ijk',varphi_alph,Ealph)
+#        varphi_alph_E_alph = np.einsum('ijk,ijk->ijk',varphi_alph,Ealph)
 #        print(varphi_alph_E_alph[0,1,:])
-        Nf = np.einsum('jik',varphi_alph_E_alph).reshape(-1,1,W.size)
 #        print(Nf[2,0,:])
         
-        varphi_alph_E_alph_p = np.einsum('ijk,ijk->ijk',varphi_alph_p,Ealph) + np.einsum('ijk,ijk->ijk',varphi_alph,Ealphp)      
+#        varphi_alph_E_alph_p = np.einsum('ijk,ijk->ijk',varphi_alph_p,Ealph) + np.einsum('ijk,ijk->ijk',varphi_alph,Ealphp)      
+        
+#        if enrich_track_var.any():
+#            print('Enriched nodes found')
+#            phi_gam_x_alph=Etilj(nodes,geom.xgam)                              # Value of the enrichment at the nodes (for approximation)
+#            phi_gam = (np.einsum('ikj,k->ij',varphi_alph,phi_gam_x_alph)).squeeze()        # PhiGam(x) evaluated at the gauss points 
+#            phi_gamp = (np.einsum('ikj,k->ij',varphi_alph,phi_gam_x_alph)).squeeze()       # Gradient of PhiGam(x) evaluated at gauss points
+        corr_fac = (varphi_alph[:,find_nodes(nodes),:].sum(axis=1)).squeeze()          # Correction function evaluated at the gauss points 
+#            print(corr_fac)
+        phi_gam = Etilj(x,geom.xgam)
+        phi_gamp = Etiljp(x,geom.xgam)
+#        phi_gam *= corr_fac                                                    # corrected
+#        phi_gamp *= corr_fac
+
+        phigammod = phi_gam.reshape(1,-1,W.size).repeat(nodes.size,axis=1)
+        phigammodP = phi_gamp.reshape(1,-1,W.size).repeat(nodes.size,axis=1)
+        Ealph_mod = np.concatenate((Ealph,phigammod))
+        Ealphp_mod = np.concatenate((Ealphp,phigammodP))
+#        print(Ealphp[0,0,:])
+#            plt.plot(x,Ealph_mod[1,1,:])
+#        else:
+#            Ealph_mod = Ealph.copy()
+#            Ealphp_mod = Ealphp.copy()
+        
+        varphi_alph_E_alph = np.einsum('ijk,ijk->ijk',varphi_alph,Ealph_mod)
+        varphi_alph_E_alph_p = np.einsum('ijk,ijk->ijk',varphi_alph_p,Ealph_mod) + np.einsum('ijk,ijk->ijk',varphi_alph,Ealphp_mod)
+        
+#        print(varphi_alph_E_alph_p)
+        Nf = np.einsum('jik',varphi_alph_E_alph).reshape(-1,1,W.size)
         dNf = np.einsum('jik',varphi_alph_E_alph_p).reshape(-1,1,W.size)
+        #plt.figure()
+        plt.plot(x,phi_gam)
         
         mat = E(x)*geom.A*W*Je*np.einsum('ikm,jkm->ijm',dNf,dNf)
         mat = mat.sum(axis=-1)
 #        print(mat.shape)
         M_mat = geom.C*geom.A*W*Je*np.einsum('ikm,jkm->ijm',Nf,Nf) 
         M_mat = M_mat.sum(axis=-1)
-        mat += M_mat                                                                # Taking into account any terms with C(x)
+        mat += M_mat                                                           # Taking into account any terms with C(x)
         elemF = (W*Je*Nf*T(x)).sum(axis=-1)
         return mat,elemF.flatten()
 
@@ -244,10 +278,10 @@ def fsample(x,dof,nodes,sample_type):                                          #
         return (xpl.T.ravel(),soln.T.ravel())                                  # return the solution evaluated at the given points 
 
 
-Np = 80                                                                        # Order of Gauss-Integration for the Discrete Variational-Problem 
-Nel=2
-El='L6'                                                                        # 1D Element of degree El[1]
-MapX='L3' 
+Np = 151                                                                        # Order of Gauss-Integration for the Discrete Variational-Problem 
+Nel=1
+El='G1'                                                                        # 1D Element of degree El[1]
+MapX='L1' 
 B=basis(float(El[-1]),El[0])                                                   #Basis for FE fields (isoparametric) 
 GP=GPXi(Np) 
 
@@ -273,27 +307,28 @@ elif El[0]=='G':
     nodes = np.linspace(0.,probsize.L,probsize.nNNodes)
     elems = np.vstack((np.arange(k,k+nodes.size-1,int(El[1])) for k in range(int(El[1])+1))).T
     enrich_nodesidx=np.arange(0,len(nodes),1)[find_nodes(nodes)]                      # index of the nodes to be enriched 
-    enrich_nodes=find_nodes(nodes)
+    enrich_nodes=nodes[find_nodes(nodes)]
     
-    globK=0*np.eye((B.enrich+1)*probsize.nNNodes)                              # This changes because now we no longer have iso-p map
-    globF=np.zeros((B.enrich+1)*probsize.nNNodes) 
-    prescribed_dof=np.array([[0,0],
-                             [-B.enrich-1,1]])
+    globK=0*np.eye((B.enrich+2)*probsize.nNNodes)            # add additional dofs corr. to interface enrichment
+    globF=np.zeros((B.enrich+2)*probsize.nNNodes) 
+    prescribed_dof=np.array([[0,0]])#,
+#                             [-B.enrich-2,1]])
 
 
 dof=np.inf*np.ones(len(globK))                                                 # initialize to infinity 
-prescribed_forc=0*np.array([[-1,-geom.M*geom.g]])                              # Don't use `int` here! (prescribed concentrated loads) 
+prescribed_forc=np.array([[-B.enrich-2,2],
+                          [-B.enrich-1,2]])                              # Don't use `int` here! (prescribed concentrated loads) 
 dof[prescribed_dof[:,0]]=prescribed_dof[:,1]
-
+#dof[1]=0
 for k in range(elems[:,0].size):                                               #Assembly of Global System
     elnodes=elems[k]
     if El[0]=='M' or El[0]=='L':
         elemord=int(El[-1])+1
         globdof = np.array([k*(elemord-1)+i for i in range(B.enrich*elemord)],int)
     elif El[0]=='G':
-        elemord = B.enrich+int(El[-1])
-        ndofsel=(int(El[-1])+1)*(B.enrich+1)
-        globdof = np.array([k*(ndofsel-B.enrich-1)+i for i in range(ndofsel)],int)
+        elemord = B.enrich+1+int(El[-1])
+        ndofsel=(int(El[-1])+1)*(B.enrich+2)
+        globdof = np.array([k*(ndofsel-B.enrich-2)+i for i in range(ndofsel)],int)
 #        globdof = globdof[[0,2,3,1]]
     if El[0]=='L' or El[0]=='M' or El[0]=='G':                                               # 1D lagrange or legendre polynomials 
         nodexy=nodes[elnodes]
@@ -303,7 +338,7 @@ for k in range(elems[:,0].size):                                               #
     globK[np.ix_(globdof,globdof)] += kel                                      #this process would change in vectorization 
     globF[globdof] += fel
 
-globF[int(prescribed_forc[:,0])] += prescribed_forc[:,1]
+globF[prescribed_forc[:,0]] += prescribed_forc[:,1]
 #print(globF[-1])
 fdof=dof==np.inf                                                               # free dofs
 nfdof=np.invert(fdof)                                                          # specified dofs 
@@ -311,10 +346,12 @@ nfdof=np.invert(fdof)                                                          #
 
 if El[0]=='L' or El[0]=='M':  
     AA=globK[np.ix_(fdof,fdof)]
+    print(nla.cond(globK[np.ix_(fdof,fdof)]))
     bb=globF[fdof]-globK[np.ix_(fdof,nfdof)] @ dof[nfdof]                                                                           
     dofme=nla.solve(AA,bb)
 elif El[0]=='G':
     AA=sp.csr_matrix( globK[np.ix_(fdof,fdof)])
+    print(nla.cond(globK[np.ix_(fdof,fdof)]))
     bb=globF[fdof]-globK[np.ix_(fdof,nfdof)] @ dof[nfdof]
     dofme,infodof = sla.bicg(AA,bb,tol=1.e-15)                                 #Use Bi-Conjugate Gradient to Solve Ax=b (?)
 dof[fdof]=dofme.copy()
