@@ -36,19 +36,18 @@ from scipy.integrate import quad,solve_bvp
 import scipy.sparse.linalg as sla
 import scipy.sparse as sp
 from scipy.interpolate import splrep,splev,interp1d
-from sympy import Symbol, Array, diff, integrate, simplify, lambdify, legendre
-
+from sympy import Symbol, Array, diff, integrate, simplify, lambdify, legendre, Abs, tensorproduct, flatten, transpose
+from copy import deepcopy 
 plt.rc('text',usetex=True)
 
-enrch=0
 
 class geometry() : #1D geometry parameters    
     def __init__(self,ne,deg):
-        self.L=1
+        self.L=10
         self.A=1.
-        self.E1=1
-        self.E2=2*self.E1
-#        self.E2=10**3
+        self.E1=10**4
+#        self.E2=2*self.E1
+        self.E2=10**3
         self.C=0.
 #        self.a=50
         self.xgam=0.5*self.L
@@ -68,6 +67,7 @@ class GPXi():
 
 class basis():                                                                 # defined on the canonical element (1D : [-1,1] ) 
     def __init__(self,deg,basis_type):
+        print(basis_type)
         deg = int(deg)
         if basis_type == 'L':                                                  # 1D Lagrange basis of degree deg
             z=Symbol('z')
@@ -83,7 +83,7 @@ class basis():                                                                 #
             self.Ns=lambdify(z,N,'numpy')
             self.dN=lambdify(z,dfN,'numpy')
             self.enrich=1
-        elif basis_type == 'M':                                                # 1D Legendre Polynomials (Fischer calls this spectral)
+        elif basis_type == 'M':                                                # 1D Legendre Polynomials 
             z = Symbol('z')
             x=Symbol('x')
             def gen_legendre_basis(n):
@@ -104,7 +104,7 @@ class basis():                                                                 #
             self.dN=lambdify(z,dfN,'numpy')
             self.enrich=1
         elif basis_type == 'G':                                                #1D GFEM Functions (degree denotes the total approximation space)
-            z=Symbol('z')
+            z=Symbol('z',real=True)
             Xi=np.linspace(-1,1,deg+1)
             def lag_basis(k):
                 n = 1.
@@ -116,12 +116,42 @@ class basis():                                                                 #
             dfN = diff(N,z)+1.e-25*N
             self.Ns=lambdify(z,N,'numpy')
             self.dN=lambdify(z,dfN,'numpy')
-            self.enrich=enrch                                                 #Enrichment order corresponding to GFEM shape functions 
+            self.enrich=enrch                                                  #Enrichment order corresponding to GFEM shape functions 
+            xalph = Symbol('xalph',real=True)
+            halph = Symbol('halph',real=True)
+            N1 = Array([((z-xalph)/halph)**n + 1.e-26*(z-xalph)/halph for n in range(self.enrich+1)])   #shape consistency take E_o = 1
+            Nf1 = lambdify((z,xalph,halph),N1,'numpy')
+            dfN1 = lambdify((z,xalph,halph),diff(N1,z)+1.e-26*N1,'numpy')
+            self.Np=Nf1
+            self.dNp=dfN1
+        elif basis_type == 'IF':
+            print('here')
+            z=Symbol('z',real=True)
+            Xi=np.linspace(-1,1,deg+1)
+            def lag_basis(k):
+                n = 1.
+                for i in range(len(Xi)):
+                    if k != i:
+                        n *= (z-Xi[i])/(Xi[k]-Xi[i])
+                return n
+            N = Array([simplify(lag_basis(m)) for m in range(deg+1)])            
+            dfN = diff(N,z)+1.e-25*N
+            self.Ns=lambdify(z,N,'numpy')
+            self.dN=lambdify(z,dfN,'numpy')
+            self.enrich=enrch                                                  # Enrichment order corresponding to GFEM shape functions 
+            xalph = Symbol('xalph',real=True)
+            halph = Symbol('halph',real=True)
+            xgam=Symbol('xgam',real=True)
+            
+            Nf2 = simplify( Array([(abs(z-xgam))**m * ((z-xalph)/halph)**n +1.e-26*(z-xalph)/halph for m in range(2) for n in range(enrch+1)]) )  # Enrichment by non-polynomials (for interfaces) 
+            dfN2 = simplify(Nf2.diff(z) + 1.e-26*Nf2)
+            self.NIF=lambdify((z,xgam,xalph,halph),Nf2,'numpy')                # Final enrichment functions including both polynomial and level set
+            self.DNIF=lambdify((z,xgam,xalph,halph),dfN2,'numpy')
         else:
             raise Exception('Element type not implemented yet')
        
 def E(x):
-    Ef = geom.E2*np.heaviside(x-geom.xgam,0) + geom.E1*(1-np.heaviside(x-geom.xgam,0))
+    Ef = geom.E2*np.heaviside(x-geom.xgam,1) + geom.E1*(1-np.heaviside(x-geom.xgam,0))
     return Ef
 
 def g(x):
@@ -137,7 +167,7 @@ def uex(x):
     return np.heaviside(x-geom.xgam,1.0)*u2(x)+(1-np.heaviside(x-geom.xgam,0))*u1(x)
 
 def T(x):
-    return 0*(25*x-7.5*x**2+0.5*x**3)
+    return 25*x-7.5*x**2+0.5*x**3
 
 def fexact(x,y):
     u,up=y
@@ -153,95 +183,55 @@ def Lj(x,nodes):                                                               #
     return (x - geom.xgam)/(max(hL,hR))
 
 def find_nodes(nodes):
-    return abs(nodes-geom.xgam) <= geom.L/Nel
+    return abs(nodes-geom.xgam) < geom.L/Nel                                   # Equal to will create some problems     
 
-def Ej(x,xalph,halph,enrich):
-    z= Symbol('z')
-    N = Array([((z-xalph)/halph)**n + 1.e-26*(z-xalph)/halph for n in range(enrich+1)])   #shape consistency take E_o = 1
-    Nf = lambdify(z,N,'numpy')
-    return Nf(x)
-
-def Ejp(x,xalph,halph,enrich):
-    z= Symbol('z')
-    N = Array([((z-xalph)/halph)**n + 1.e-26*(z-xalph)/halph for n in range(enrich+1)])   #shape consistency take E_o = 1
-    dfN = lambdify(z,diff(N,z)+1.e-26*N,'numpy')                               #shape consistency
-    return dfN(x)        
-
-def Etilj(x,xgam):                                                       # Absolute signed distance function with smoothening 
-    return np.heaviside(x-xgam,0.)*(x-xgam)/(geom.L-xgam)                         # Test for ramp function  
-#    return abs(abs(x-xgam)*np.sign((x-xgam)))/np.max(abs(xalph-xgam))
+def Etilj(x,xgam):                                                             # Absolute signed distance function with smoothening 
+    
+    return abs(x-xgam) 
 
 def Etiljp(x,xgam):
     return np.heaviside(x-xgam,0.)/(geom.L-xgam)
 #    return np.sign(x-xgam)*np.sign((x-xgam)*np.sign(x-xgam))
 #    return (-1.+2*np.heaviside(x-xgam,1))/np.max(abs(xalph-xgam))
 
-def loc_mat(nodes):                                                            #Computes the element quantities when supplied with gloabl nodes
+def loc_mat(nodes,ElFlag,Ndnode):                                                     #Computes the element quantities when supplied with gloabl nodes
     xi=GP.xi;W=GP.wght
-    x=np.array(nB.Ns(xi)).T @ nodes
-    Je=np.array(nB.dN(xi)).T @ nodes
+    
+    if etypes=='M' or etypes=='L' or etypes=='G':
+        x=np.array(nB.Ns(xi)).T @ nodes
+        Je=np.array(nB.dN(xi)).T @ nodes
+    elif etypes=='IF':
+        x=np.array(B.Ns(xi)).T @ nodes
+        Je=np.array(B.dN(xi)).T @ nodes
 #    print(Je)
     if El[0]=='L' or El[0]=='M':                                               # 1D lagrange or legendre basis
         b1 = np.array(B.Ns(xi)).reshape(-1,1,W.size)
         a1=np.array(B.dN(xi)).reshape(-1,1,W.size)  
         a2=a1.reshape(1,len(a1),-1).copy()
         b2=b1.reshape(1,len(b1),-1).copy()
-        a1 *= E(x)/Je*geom.A*W                                                 #multiply by weights, jacobian, A, in bitwise fashion 
+        a1 *= E(x)/Je*geom.A*W                                                 # multiply by weights, jacobian, A, in bitwise fashion 
         b1 *= geom.C*Je*W
         mat=np.tensordot(a1,a2,axes=([1,2],[0,2])) + np.tensordot(b1,b2,axes=([1,2],[0,2]))     #could potentially use einsum to clean it up (but works for now!)
         elemF=(np.array(B.Ns(xi))*W*Je*T(x)).sum(axis=1).flatten()
         return mat,elemF
-    elif El[0]=='G':                                                           #GFEM approximation 
-        
-        enrich_track_var=nodes.reshape(1,-1).T==enrich_nodes                   #check if any of these element nodes fall under repr./blending elements
-        
-        halph = nodes[-1] - nodes[0]
-        enrch = B.enrich                                                       #enrichment order 
-        
-        varphi_alph = np.array(B.Ns(xi)).reshape(1,-1,W.size)                  #\varphi_1 evaluated at gauss points (along 3rd Dimensn)
-#        print(varphi_alph.shape)
-        varphi_alph_p = 1/Je* np.array(B.dN(xi)).reshape(1,-1,W.size)          #\varphi_1' evaluated at gauss points (along 3rd Dimensn)
-        
-        Ealph = np.array(Ej(x,nodes,halph,enrch))
-        Ealphp = np.array(Ejp(x,nodes,halph,enrch))
-            
-#        varphi_alph_E_alph = np.einsum('ijk,ijk->ijk',varphi_alph,Ealph)
-#        print(varphi_alph_E_alph[0,1,:])
-#        print(Nf[2,0,:])
-        
-#        varphi_alph_E_alph_p = np.einsum('ijk,ijk->ijk',varphi_alph_p,Ealph) + np.einsum('ijk,ijk->ijk',varphi_alph,Ealphp)      
-        
-#        if enrich_track_var.any():
-#            print('Enriched nodes found')
-#            phi_gam_x_alph=Etilj(nodes,geom.xgam)                              # Value of the enrichment at the nodes (for approximation)
-#            phi_gam = (np.einsum('ikj,k->ij',varphi_alph,phi_gam_x_alph)).squeeze()        # PhiGam(x) evaluated at the gauss points 
-#            phi_gamp = (np.einsum('ikj,k->ij',varphi_alph,phi_gam_x_alph)).squeeze()       # Gradient of PhiGam(x) evaluated at gauss points
-        corr_fac = (varphi_alph[:,find_nodes(nodes),:].sum(axis=1)).squeeze()          # Correction function evaluated at the gauss points 
-#            print(corr_fac)
-        phi_gam = Etilj(x,geom.xgam)
-        phi_gamp = Etiljp(x,geom.xgam)
-#        phi_gam *= corr_fac                                                    # corrected
-#        phi_gamp *= corr_fac
+    elif El[0]=='G':                                                           # GFEM approximation (with only polynomial enrichments)
 
-        phigammod = phi_gam.reshape(1,-1,W.size).repeat(nodes.size,axis=1)
-        phigammodP = phi_gamp.reshape(1,-1,W.size).repeat(nodes.size,axis=1)
-        Ealph_mod = np.concatenate((Ealph,phigammod))
-        Ealphp_mod = np.concatenate((Ealphp,phigammodP))
-#        print(Ealphp[0,0,:])
-#            plt.plot(x,Ealph_mod[1,1,:])
-#        else:
-#            Ealph_mod = Ealph.copy()
-#            Ealphp_mod = Ealphp.copy()
+        halph = nodes[-1] - nodes[0]        
+        varphi_alph = np.array(B.Ns(xi)).reshape(1,-1,W.size)                  # \varphi_1 evaluated at gauss points (along 3rd Dimensn)
+#        print(varphi_alph.shape)
+        varphi_alph_p = 1/Je* np.array(B.dN(xi)).reshape(1,-1,W.size)          # \varphi_1' evaluated at gauss points (along 3rd Dimensn)
         
-        varphi_alph_E_alph = np.einsum('ijk,ijk->ijk',varphi_alph,Ealph_mod)
-        varphi_alph_E_alph_p = np.einsum('ijk,ijk->ijk',varphi_alph_p,Ealph_mod) + np.einsum('ijk,ijk->ijk',varphi_alph,Ealphp_mod)
+        Ealph= np.array(B.Np(x,nodes.reshape(-1,1),halph))                     # broadcast the nodes to vectorize calculations on the fly
+        Ealphp=np.array(B.dNp(x,nodes.reshape(-1,1),halph))
+#        print(Ealph.shape)
+        
+        varphi_alph_E_alph = np.einsum('ijk,ijk->ijk',varphi_alph,Ealph)
+        varphi_alph_E_alph_p = np.einsum('ijk,ijk->ijk',varphi_alph_p,Ealph) + np.einsum('ijk,ijk->ijk',varphi_alph,Ealphp)
         
 #        print(varphi_alph_E_alph_p)
         Nf = np.einsum('jik',varphi_alph_E_alph).reshape(-1,1,W.size)
         dNf = np.einsum('jik',varphi_alph_E_alph_p).reshape(-1,1,W.size)
-        #plt.figure()
-        plt.plot(x,phi_gam)
-        
+
         mat = E(x)*geom.A*W*Je*np.einsum('ikm,jkm->ijm',dNf,dNf)
         mat = mat.sum(axis=-1)
 #        print(mat.shape)
@@ -250,6 +240,48 @@ def loc_mat(nodes):                                                            #
         mat += M_mat                                                           # Taking into account any terms with C(x)
         elemF = (W*Je*Nf*T(x)).sum(axis=-1)
         return mat,elemF.flatten()
+    elif "".join(El.rsplit(El[-1])) == 'IF':
+        halph = nodes[-1]-nodes[0]
+        
+#        Find out if the current element is reproducing element (to split integration domain)
+        
+        varphi_alph = np.array(B.Ns(xi)).reshape(1,-1,W.size)
+        varphi_alph_p = 1/Je* np.array(B.dN(xi)).reshape(1,-1,W.size)          # \varphi_1' evaluated at gauss points (along 3rd Dimensn)
+        
+        Ealph= np.array(B.NIF(x,geom.xgam,nodes.reshape(-1,1),halph))                     # broadcast the nodes to vectorize calculations on the fly
+        Ealphp=np.array(B.DNIF(x,geom.xgam,nodes.reshape(-1,1),halph))
+#        print(Ealph.shape)
+        
+        varphi_alph_E_alph = np.einsum('ijk,ijk->ijk',varphi_alph,Ealph)
+        varphi_alph_E_alph_p = np.einsum('ijk,ijk->ijk',varphi_alph_p,Ealph) + np.einsum('ijk,ijk->ijk',varphi_alph,Ealphp)
+        
+        Nf = np.einsum('jik',varphi_alph_E_alph).reshape(-1,1,W.size)
+        dNf = np.einsum('jik',varphi_alph_E_alph_p).reshape(-1,1,W.size)
+
+        mat = E(x)*geom.A*W*Je*np.einsum('ikm,jkm->ijm',dNf,dNf)
+        mat = mat.sum(axis=-1)
+#        print(mat.shape)
+        M_mat = geom.C*geom.A*W*Je*np.einsum('ikm,jkm->ijm',Nf,Nf) 
+        M_mat = M_mat.sum(axis=-1)
+        mat += M_mat                                                           # Taking into account any terms with C(x)
+        elemF = (W*Je*Nf*T(x)).sum(axis=-1)
+#        Now return only the relevant DOFS for mat and elemF
+        if ElFlag == 'nn':
+            arrdof=[i for i in range(Ndnode)]+[2*Ndnode+i for i in range(Ndnode)] #which dofs are selected 
+        elif ElFlag == 'blr':
+            arrdof=[i for i in range(3*Ndnode)]
+        elif ElFlag == 'bll':
+            arrdof=[i for i in range(Ndnode)]+[2*Ndnode+i for i in range(2*Ndnode)] 
+        elif ElFlag == 'rpp':
+            arrdof=[i for i in range(len(mat))]
+        
+        dofsend=np.array(arrdof)
+        return mat[np.ix_(dofsend,dofsend)],elemF[dofsend].flatten()
+
+      
+        
+#    elif El[0] is 'H':
+        
 
 def fsample(x,dof,nodes,sample_type):                                          #outputs the FE field (i.e. disp here) at x according to approximation
     if sample_type=='spline':
@@ -269,28 +301,33 @@ def fsample(x,dof,nodes,sample_type):                                          #
         dofarang=dofarang.reshape(int(El[-1])+1,1,-1)
         xarang = np.vstack((np.arange(k,k+nodes.size-1,int(MapX[-1])) for k in range(int(MapX[-1])+1)))
         xarang = xarang.reshape(int(MapX[-1])+1,1,-1)
-#        print(dof.shape)
-#        print(nodes.shape)
+
         dofs=dof[dofarang]
         nodesx=nodes[xarang]
         soln = np.einsum('ikj,kmj->imj',N,dofs)
         xpl = np.einsum('ikj,kmj->imj',Nx,nodesx)
         return (xpl.T.ravel(),soln.T.ravel())                                  # return the solution evaluated at the given points 
 
-
-Np = 151                                                                        # Order of Gauss-Integration for the Discrete Variational-Problem 
-Nel=1
-El='G1'                                                                        # 1D Element of degree El[1]
+enrch=1
+Np = 80                                                                        # Order of Gauss-Integration for the Discrete Variational-Problem 
+Nel=5
+mid_elem_idx=int(Nel/2)
+El='IF1'                                                                        # 1D Element of degree El[1]
 MapX='L1' 
-B=basis(float(El[-1]),El[0])                                                   #Basis for FE fields (isoparametric) 
+etypes="".join(El.rsplit(El[-1]))
+B=basis(float(El[-1]),etypes)                                                   # Basis for FE fields (isoparametric) 
 GP=GPXi(Np) 
 
-if El[0]=='M' or El[0]=='L':                                                   #1D Mapping function for the physical coordinates (can take only single digits, some modification needed)
+if El[0]=='M' or El[0]=='L':                                                   # 1D Mapping function for the physical coordinates (can take only single digits, some modification needed)
     nB=basis(float(MapX[-1]),MapX[0])
     geom=geometry(Nel,float(MapX[-1])) 
     probsize=geometry(Nel,float(El[-1]))
 elif El[0]=='G':
-    nB=basis(float(El[-1]),El[0])
+#    nB=basis(float(MapX[-1]),MapX[0])
+    nB=basis(float(El[-1]),etypes)
+    geom=geometry(Nel,float(MapX[-1])) 
+    probsize=geometry(Nel,float(El[-1]))
+elif etypes=='IF':
     geom=geometry(Nel,float(MapX[-1])) 
     probsize=geometry(Nel,float(El[-1]))
 
@@ -298,65 +335,112 @@ Bp = (geom.E1*geom.E2-g(geom.xgam)*(geom.E2-geom.E1)-g(geom.L)*geom.E1)/(geom.E2
 
 if El[0]=='M' or El[0]=='L':
     nodes = np.linspace(0.,geom.L,geom.nNNodes)
-    elems = np.vstack((np.arange(k,k+nodes.size-1,int(MapX[1])) for k in range(int(MapX[1])+1))).T
-    globK=0*np.eye((B.enrich)*probsize.nNNodes)                                     # This changes because now we no longer have iso-p map
+    elems = np.vstack((np.arange(k,k+nodes.size-1,int(MapX[-1])) for k in range(int(MapX[-1])+1))).T
+    globK=0*np.eye((B.enrich)*probsize.nNNodes)                                # This changes because now we no longer have iso-p map
     globF=np.zeros((B.enrich)*probsize.nNNodes)    
     prescribed_dof=np.array([[0,0],
                              [-B.enrich,1]])
 elif El[0]=='G':
     nodes = np.linspace(0.,probsize.L,probsize.nNNodes)
-    elems = np.vstack((np.arange(k,k+nodes.size-1,int(El[1])) for k in range(int(El[1])+1))).T
+    elems = np.vstack((np.arange(k,k+nodes.size-1,int(El[-1])) for k in range(int(El[-1])+1))).T  #Connectivity (changes in case of interface enrichment)
     enrich_nodesidx=np.arange(0,len(nodes),1)[find_nodes(nodes)]                      # index of the nodes to be enriched 
-    enrich_nodes=nodes[find_nodes(nodes)]
+    enrich_nodes=nodes[find_nodes(nodes)]                                      # the actual nodes enriched (identified here)
     
-    globK=0*np.eye((B.enrich+2)*probsize.nNNodes)            # add additional dofs corr. to interface enrichment
-    globF=np.zeros((B.enrich+2)*probsize.nNNodes) 
-    prescribed_dof=np.array([[0,0]])#,
-#                             [-B.enrich-2,1]])
+    globK=0*np.eye((B.enrich+1)*probsize.nNNodes)                              # add additional dofs corr. to interface enrichment
+    globF=np.zeros((B.enrich+1)*probsize.nNNodes) 
+    prescribed_dof=np.array([[0,0],
+                             [-B.enrich-1,1]])
+    
+elif "".join(El.rsplit(El[-1])) == 'IF':
+    if Nel % 2 != 1:
+        raise Exception('Interface Enrichment not needed, specify odd no. of elements !')
+    else:
+        nodes = np.linspace(0.,geom.L,geom.nNNodes)
+        elems = np.vstack((np.arange(k,k+nodes.size-1,int(El[-1])) for k in range(int(El[-1])+1))).T  #Connectivity (changes in case of interface enrichment)
+        enrich_nodesidx=np.arange(0,len(nodes),1)[find_nodes(nodes)]                      # index of the nodes to be enriched 
+        enrich_nodes=nodes[find_nodes(nodes)]                                      # the actual nodes enriched (identified here)
+#    Now decide the size of globK and globF now that you have figured out enriched nodes 
+        globK=0*np.eye((B.enrich+1)*probsize.nNNodes+2*(B.enrich+1))               # add additional dofs corr. to interface enrichment
+        globF=np.zeros(len(globK)) 
+        prescribed_dof=np.array([[0,0],
+                                 [-B.enrich-1,1]])
 
-
+#for k in range(len(elems)):
+    
 dof=np.inf*np.ones(len(globK))                                                 # initialize to infinity 
-prescribed_forc=np.array([[-B.enrich-2,2],
-                          [-B.enrich-1,2]])                              # Don't use `int` here! (prescribed concentrated loads) 
+prescribed_forc=0*np.array([[-1,-geom.M*geom.g]])                              # Don't use `int` here! (prescribed concentrated loads) 
 dof[prescribed_dof[:,0]]=prescribed_dof[:,1]
 #dof[1]=0
 for k in range(elems[:,0].size):                                               #Assembly of Global System
     elnodes=elems[k]
+    elflag='nn'                                                                #element flag: nn--normal, bll--blending left, blr--blending right, rpp--reproducing
     if El[0]=='M' or El[0]=='L':
         elemord=int(El[-1])+1
         globdof = np.array([k*(elemord-1)+i for i in range(B.enrich*elemord)],int)
+        ndofnode=1
     elif El[0]=='G':
-        elemord = B.enrich+1+int(El[-1])
-        ndofsel=(int(El[-1])+1)*(B.enrich+2)
-        globdof = np.array([k*(ndofsel-B.enrich-2)+i for i in range(ndofsel)],int)
-#        globdof = globdof[[0,2,3,1]]
+        elemord = B.enrich+int(El[-1])
+        ndofsel=(int(El[-1])+1)*(B.enrich+1)
+        globdof = np.array([k*(ndofsel-B.enrich-1)+i for i in range(ndofsel)],int)
+        ndofnode=deepcopy(elemord)
+    elif "".join(El.rsplit(El[-1])) == 'IF':
+        elemord = B.enrich+int(El[-1])
+        ndofsel=(int(El[-1])+1)*(B.enrich+1)
+        if k+1 < mid_elem_idx:
+            globdof=[k*(ndofsel-B.enrich-1)+i for i in range(ndofsel)]             # 1-D list of dofs instead of array just to make sure 
+            ndofnode=B.enrich+1
+        elif k+1 == mid_elem_idx:
+            elflag = 'bll'
+            ndofnode=B.enrich+1
+            globdof=[k*(ndofsel-B.enrich-1)+i for i in range(ndofsel)]
+            globdofend=deepcopy(globdof[-1])
+            globdof += [globdofend+i for i in range(1,ndofnode+1)]             # adding the extra dofs at farther node (note phi2 comes here then)
+            globdofend=deepcopy(globdof[-1])
+        elif k==mid_elem_idx:                                                  # reproducing element 
+            elflag='rpp'
+            globdof=[globdofend-2*(ndofnode)+1+i for i in range(4*ndofnode)]
+            globdofend=deepcopy(globdof[-1])
+        elif k-1 == mid_elem_idx:
+            elflag='blr'
+            globdof=[globdofend-2*(ndofnode)+1+i for i in range(3*ndofnode)] # adding extra dofs at the nearer node (blr)
+            globdofend=deepcopy(globdof[-1])
+        elif k-1 > mid_elem_idx:
+            elflag=='nn'
+            globdof=[globdofend-ndofnode+1 + i for i in range(2*ndofnode)]
+            
     if El[0]=='L' or El[0]=='M' or El[0]=='G':                                               # 1D lagrange or legendre polynomials 
         nodexy=nodes[elnodes]
+    elif "".join(El.rsplit(El[-1])) == 'IF':
+        nodexy=nodes[elnodes]
     else:
-        nodexy=nodexy[:,elnodes]
-    kel,fel=loc_mat(nodexy)
-    globK[np.ix_(globdof,globdof)] += kel                                      #this process would change in vectorization 
+        nodexy=nodexy[:,elnodes]                                               #for 2D/3D code (extension)
+    
+    
+    globdofarr=np.array(globdof)
+    kel,fel=loc_mat(nodexy,elflag,ndofnode)
+    globK[np.ix_(globdofarr,globdofarr)] += kel                                      #this process would change in vectorization 
     globF[globdof] += fel
 
-globF[prescribed_forc[:,0]] += prescribed_forc[:,1]
+globF[int(prescribed_forc[:,0])] += prescribed_forc[:,1]
 #print(globF[-1])
 fdof=dof==np.inf                                                               # free dofs
 nfdof=np.invert(fdof)                                                          # specified dofs 
 
 
-if El[0]=='L' or El[0]=='M':  
+if etypes=='L' or etypes=='M':  
     AA=globK[np.ix_(fdof,fdof)]
-    print(nla.cond(globK[np.ix_(fdof,fdof)]))
+#    print(nla.cond(globK[np.ix_(fdof,fdof)]))
     bb=globF[fdof]-globK[np.ix_(fdof,nfdof)] @ dof[nfdof]                                                                           
     dofme=nla.solve(AA,bb)
-elif El[0]=='G':
+elif etypes=='G' or etypes=='IF':
     AA=sp.csr_matrix( globK[np.ix_(fdof,fdof)])
-    print(nla.cond(globK[np.ix_(fdof,fdof)]))
+#    print(nla.cond(globK[np.ix_(fdof,fdof)]))
     bb=globF[fdof]-globK[np.ix_(fdof,nfdof)] @ dof[nfdof]
-    dofme,infodof = sla.bicg(AA,bb,tol=1.e-15)                                 #Use Bi-Conjugate Gradient to Solve Ax=b (?)
+    dofme,infodof = sla.minres(AA,bb,tol=1.e-12)                                 #Use Bi-Conjugate Gradient to Solve Ax=b (?)
+
 dof[fdof]=dofme.copy()
     
-if El[0] is 'L' or El[0] is 'M':
+if "".join(El.rsplit(El[-1])) == 'L' or "".join(El.rsplit(El[-1])) == 'M':
     plot_it = True 
 else:
     plot_it=False
@@ -383,9 +467,9 @@ if plot_it:
     plt.plot(xplot,uex(xplot),label=r'Exact Solution')
     #plt.plot(xplot,res_a.sol(xplot)[0],label=r'Scipy: solve\_bvp')
     ax=plt.gca()
-    if El[0]=='L':
+    if "".join(El.rsplit(El[-1]))=='L':
         plt.plot(xpl2,uapp,'rx',label=r'Quadratic Lagrange FE')
-    elif El[0]=='M':
+    elif "".join(El.rsplit(El[-1]))=='M':
         plt.plot(xpl2,uapp,'rx',label=r'p-Hierarchical GFEM: Degree '+str(El[1]))
     plt.tick_params(axis='both',which='both',direction='in',top=True,right=True,labelsize=18)
     plt.title(r'Number of elements: '+str(Nel)+', NGP = '+str(Np),fontsize=20)
@@ -393,4 +477,5 @@ if plot_it:
     plt.grid(True,linestyle='--')
     plt.text(0.1,0.4,r'$U^h$ = '+str(0.5*dof @ (globK @ dof)),transform=ax.transAxes,
              fontsize=22,bbox=dict(facecolor='red', alpha=0.5))
-print('Uh=',0.5*dof @ (globK @ dof))
+Uh = 0.5*dof @ (globK @ dof)
+print('Uh={0:.15f}'.format(Uh))
